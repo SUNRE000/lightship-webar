@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MindAR Video Chroma Key</title>
+  
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.2/dist/mindar-image-aframe.prod.js"></script>
+
+  <style>
+    /* 移植自你的 index.css [cite: 1, 2, 3] */
+    body { margin: 0; }
+    .logo {
+      z-index: 20;
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      right: 0;
+      background-color: rgb(255, 255, 255);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: white; /* 原檔為白色字體，若背景白可能看不見，建議調整或加圖片 */
+      font-family: 'Nunito', monospace;
+      text-shadow: 0px 0px 5px black;
+      transition: opacity 0.5s;
+    }
+    
+    /* 掃描提示框 UI (參考 MindAR 範例) */
+    #scanning-overlay {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      background: transparent;
+      z-index: 10;
+    }
+    .scanning-inner {
+      width: 50vw;
+      height: 50vw;
+      border: 2px solid white;
+      border-radius: 20px;
+    }
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="logo" class="logo">
+    <img src="assets/LOGO.jpg" alt="Start AR" style="max-width: 50%; cursor: pointer;" id="start-btn"/>
+    <div style="position:absolute; bottom: 20%; color: black; text-shadow: none;">點擊開始體驗</div>
+  </div>
+
+  <div id="scanning-overlay" class="hidden">
+    <div class="scanning-inner"></div>
+  </div>
+
+  <a-scene 
+    mindar-image="imageTargetSrc: ./targets.mind; filterMinCF:0.0001; filterBeta: 0.001; uiScanning: #scanning-overlay" 
+    color-space="sRGB" 
+    renderer="colorManagement: true, physicallyCorrectLights" 
+    vr-mode-ui="enabled: false" 
+    device-orientation-permission-ui="enabled: false">
+
+    <a-assets>
+      <video id="image4-video" 
+        src="./assets/image4-video.mp4" 
+        preload="auto" 
+        loop="true" 
+        crossorigin="anonymous" 
+        playsinline 
+        webkit-playsinline>
+      </video>
+    </a-assets>
+
+    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+    <a-entity mindar-image-target="targetIndex: 0" ar-controller>
+      
+      <a-entity 
+        geometry="primitive: plane; height: 1; width: 0.56" 
+        position="0 0 0" 
+        scale="1.5 1.5 1.5"
+        material="shader: chromakey; src: #image4-video; color: 0.4 0.7 0.17; similarityThreshold: 0.2">
+      </a-entity>
+
+    </a-entity>
+  </a-scene>
+
+  <script>
+    // 1. 註冊 Chroma Key Shader
+    // 這段程式碼移植自你的 app.js [cite: 16-23]
+    AFRAME.registerShader('chromakey', {
+      schema: {
+        src: {type: 'map'},
+        color: {default: {x: 0.1, y: 0.9, z: 0.2}, type: 'vec3', is: 'uniform'},
+        transparent: {default: true, is: 'uniform'},
+        similarityThreshold: {default: 0.2, type: 'number', is: 'uniform'}, // 調整預設值
+      },
+
+      init: function (data) {
+        const videoTexture = new THREE.VideoTexture(data.src);
+        videoTexture.minFilter = THREE.LinearFilter; // [cite: 17]
+
+        this.material = new THREE.ShaderMaterial({
+          uniforms: {
+            color: { type: 'vec3', value: new THREE.Vector3(data.color.x, data.color.y, data.color.z) },
+            myTexture: { type: 't', value: videoTexture },
+            similarityThreshold: { type: 'f', value: data.similarityThreshold }
+          },
+          vertexShader: `
+            varying vec2 vUv;
+            void main(void) {
+              vUv = uv;
+              vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+              gl_Position = projectionMatrix * mvPosition;
+            }
+          `, // [cite: 18, 19]
+          fragmentShader: `
+            uniform sampler2D myTexture;
+            uniform vec3 color;
+            uniform float similarityThreshold;
+            varying vec2 vUv;
+            void main(void) {
+              vec4 texColor = texture2D(myTexture, vUv);
+              vec3 tColor = texColor.rgb;
+              // 計算與綠幕顏色的距離
+              float dist = length(tColor - color);
+              // 根據閥值計算透明度 
+              float a = smoothstep(similarityThreshold, similarityThreshold + 0.1, dist);
+              gl_FragColor = vec4(tColor, a * texColor.a);
+            }
+          `, // 改良後的 Fragment Shader，使用 smoothstep 邊緣更柔和
+          transparent: true
+        });
+      },
+
+      update: function (data) {
+        this.material.uniforms.color.value.set(data.color.x, data.color.y, data.color.z);
+        this.material.uniforms.similarityThreshold.value = data.similarityThreshold;
+      }
+    });
+
+    // 2. 註冊 AR 控制器 (處理影片播放與 UI)
+    AFRAME.registerComponent('ar-controller', {
+      init: function () {
+        const target = this.el;
+        const video = document.querySelector('#image4-video');
+        
+        // 偵測到圖片
+        target.addEventListener('targetFound', () => {
+          console.log("Target Found");
+          video.play();
+          // 如果需要淡入效果，可以在這裡加 animation
+        });
+
+        // 圖片丟失
+        target.addEventListener('targetLost', () => {
+          console.log("Target Lost");
+          video.pause();
+          video.currentTime = 0; // 根據需要決定是否重置影片 [cite: 25]
+        });
+      }
+    });
+
+    // 3. UI 互動邏輯 (點擊 Logo 進入 AR)
+    document.addEventListener("DOMContentLoaded", function() {
+      const logoOverlay = document.getElementById('logo');
+      const startBtn = document.getElementById('start-btn');
+      const scanningOverlay = document.getElementById('scanning-overlay');
+      const sceneEl = document.querySelector('a-scene');
+
+      // 點擊 Logo 隱藏遮罩並啟動 
+      const startExperience = () => {
+        logoOverlay.style.opacity = '0';
+        setTimeout(() => {
+          logoOverlay.style.display = 'none';
+          scanningOverlay.classList.remove('hidden');
+        }, 500);
+      };
+
+      if(startBtn) {
+        startBtn.addEventListener('click', startExperience);
+      } else {
+        // 如果沒有按鈕，點擊整個頁面也可以
+        logoOverlay.addEventListener('click', startExperience);
+      }
+    });
+  </script>
+</body>
+</html>
